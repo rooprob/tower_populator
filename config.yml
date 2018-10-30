@@ -27,6 +27,11 @@ users:
     first_name: De
     is_superuser: false
     last_name: Mise
+  - username: dom
+    email: dom@hyrule.com
+    first_name: Dom
+    is_superuser: false
+    last_name: Fitz
 
 teams:
   - name: Ops
@@ -43,45 +48,73 @@ teams:
     - zelda
 
 credentials:
+  - name: SSH example
+    description: Vault Test for API
+    team: Ops
+    inputs:
+      username: root
+      private_key: ~/.ssh/awx-deploy
+    credential_type: Machine
+  - name: Vault Test for API
+    description: Vault Test for API
+    team: Ops
+    inputs:
+      vault_password: secret
+    credential_type: Vault
   - name: EC2 SSH
     description:  Used for EC2 instances
     team: Ops
-    kind: ssh
-    username: root
-    private_key: /Users/jmartin/.ssh/ida_rsa
+    inputs:
+      username: root
+      private_key: ~/.ssh/awx-deploy
+    credential_type: Machine
   - name: Local SSH
     description:  Used for vagrant instances
     team: Ops
-    kind: ssh
-    username: vagrant
-    private_key: /Users/jmartin/.vagrant.d/insecure_private_key
+    inputs:
+      username: vagrant
+      private_key: ~/.vagrant.d/insecure_private_key
+    credential_type: Machine
   - name: AWS creds
-    description: Used for AWS 
+    description: Used for AWS
     team: Ops
-    kind: aws
-    username: YOU
-    password: CANTHANDLETHIS
-  - name: RAX creds
-    description: Used for Rackspace 
-    team: Ops
-    kind: rax
-    username: me
-    password: noyoucant
+    inputs:
+      username: YOU
+      password: CANTHANDLETHIS
+    credential_type: Amazon Web Services
+  - name: user1
+    description: user1
+    inputs:
+      username: user1
+      password: password
+      become_method: su
+      become_username: user2
+    credential_type: Machine
+  - name: user2
+    description: user2
+    inputs:
+      username: user2
+      password: password
+      become_method: su
+      become_username: user1
+    credential_type: Machine
 
 inventories:
-  - name: Production
-    description: Production Machines
+  - name: localhost
+    description: local machine
+    variables: ./variables.yml
     groups:
-      - name: EC2
-        credential: AWS creds
-        source: ec2
-        description: EC2 hosts
-      - name: RAX
-        credential: RAX creds
-        source: rax
-        description: RAX hosts
-  - name: Test
-    description: Test Machines
+      - name: localhost
+        source: manual
+        hosts:
+        - name: 127.0.0.1
+
+  - name: Custom script inventory
+    description: "this is an inventory that contains a customer inventory source"
+    variables: ./variables.yml
+
+  - name: tower-cli manual examples
+    description: tower-cli manual examples
     groups:
       - name: web
         source: manual
@@ -90,9 +123,22 @@ inventories:
         - name: 10.42.0.7
         - name: 10.42.0.8
         - name: 10.42.0.9
-        - name: 10.42.0.10     
-  - name: QA
-    description: QA Machines
+        - name: 10.42.0.10
+      - name: databases
+        source: manual
+        hosts:
+        - name: server.example0.com
+      - name: web servers
+        source: manual
+        hosts:
+        - name: server.example1.com
+        - name: server.example2.com
+  - name: tower-cli SCM inventory example
+    description: SCM inventory examples
+
+inventory_script:
+  - name: "foobar inventory script"
+    script: ./example_script.py
 
 projects:
   - name: Hyrulian Playbooks
@@ -103,14 +149,52 @@ projects:
     description: Some example roles and playbooks
     scm_type: git
     scm_url: https://github.com/ansible/ansible-examples
+  - name: Inventory file examples
+    description: Some example roles and playbooks
+    scm_type: git
+    scm_url: https://github.com/AlanCoding/Ansible-inventory-file-examples.git
+  - name: sample_playbooks
+    description: Some example roles and playbooks
+    scm_type: git
+    scm_url: https://github.com/AlanCoding/permission-testing-playbooks.git
+
+inventory_source:
+  - name: "fetch foobar"
+    source_script: foobar inventory script
+    inventory: Custom script inventory
+    source: custom
+  - name: "project-based source"
+    inventory: "tower-cli SCM inventory example"
+    source_project: Inventory file examples
+    source_path: official/inventory.ini
+    overwrite_vars: true
+    source: scm
 
 job_templates:
+  - name: Hello World Debug
+    description: debug statements
+    inventory: localhost
+    credential: user1
+    project: sample_playbooks
+    playbook: debug.yml
+  - name: Hello World
+    description: echo statements
+    inventory: localhost
+    credential: user1
+    project: sample_playbooks
+    playbook: helloworld.yml
+  - name: Hello World as user2
+    description: echo statements with user2
+    inventory: localhost
+    credential: user2
+    project: sample_playbooks
+    playbook: helloworld.yml
   - name: Apache
     description: Confgure Apache servers
-    inventory: Test
+    inventory: tower-cli manual examples
     project: Hyrulian Playbooks
     playbook: site.yml
-    machine_credential: Local SSH
+    credential: SSH example
     job_type: run
     verbosity: 0
     forks: 5

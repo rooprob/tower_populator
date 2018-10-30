@@ -1,4 +1,4 @@
-#! /usr/bin/env python
+#!/usr/bin/env python
 
 import yaml
 import sys
@@ -6,13 +6,14 @@ import tower_cli
 import time
 from select import select
 import os.path
+
+import string
+from random import sample, choice
 from getpass import getpass
 
 class Config:
     def __init__(self, **entries):
         self.__dict__.update(entries)
-
-
 
 
 # load configuration
@@ -23,7 +24,10 @@ user_res = tower_cli.get_resource('user')
 team_res = tower_cli.get_resource('team')
 org_res = tower_cli.get_resource('organization')
 cred_res = tower_cli.get_resource('credential')
+cred_type_res = tower_cli.get_resource('credential_type')
 inv_res = tower_cli.get_resource('inventory')
+inv_script_res = tower_cli.get_resource('inventory_script')
+inv_source_res = tower_cli.get_resource('inventory_source')
 host_res = tower_cli.get_resource('host')
 group_res = tower_cli.get_resource('group')
 project_res = tower_cli.get_resource('project')
@@ -35,13 +39,22 @@ print tower.org, tower.org_desc
 org = org_res.create(name=tower.org, description=tower.org_desc)
 org_id = org['id']
 
+chars = string.letters + string.digits
+pass_length=10
+
 if tower.users:
     print "\nCreating Users\n"
     # create users
     for u in tower.users:
         print u
-        user = user_res.create(**u)
-        org_res.associate(org_id, user['id'])
+        try:
+            if not u.has_key('password'):
+                u['password'] = ''.join([choice(chars) for i in range(pass_length)])
+                print("generated password: {}".format(u['password']))
+                user = user_res.create(**u)
+                org_res.associate(organization=org_id, user=user['id'])
+        except Exception as ex:
+            raise ex
 
 if tower.teams:
     print "\nCreating Teams\n"
@@ -52,31 +65,55 @@ if tower.teams:
         team = team_res.create(**t)
         for u in t['users']:
             user = user_res.get(username=u)
-            team_res.associate(team['id'], user['id'])
+            team_res.associate(team=team['id'], user=user['id'])
 
 if tower.credentials:
     print "\nCreating Credentials\n"
     # create credentials
     for c in tower.credentials:
-        print c
+        c['organization'] = org_id
         if c.has_key('team') and c.has_key('user'):
             print "Creds must have either team or user, not both."
             sys.exit(1)
-        if c.has_key('team'):
-            team = team_res.get(name=team['name'])
+
+        credtype = cred_type_res.get(name=c['credential_type'])
+        c['credential_type'] = credtype['id']
+
+        print c
+        # resolve team / user
+        if 'team' in c:
+            team = team_res.get(organization=org_id, name=c['team'])
             c['team'] = team['id']
-        if c.has_key('user'):
-            user = user_res.get(name=user['name'])
-            c['user'] = user['id']
-        if c.has_key('private_key'):
-            key_file_path = os.path.expanduser(c['private_key'])
-            c['ssh_key_data'] = open(key_file_path, 'r')
-        if c.has_key('private_key_password'):
-            if c['private_key_password'] == 'prompt':
-                c['ssh_key_unlock'] = getpass('Enter your ssh key password: ')
-            else:
-                c['ssh_key_unlock'] = c['private_key_password']     
-        c = cred_res.create(**c)
+            if 'user' in c:
+                user = user_res.get(name=c['user'])
+                c['user'] = user['id']
+
+        if 'inputs' in c:
+            # resolve key material
+            if 'private_key' in c['inputs']:
+                key_file_path = os.path.expanduser(c['inputs']['private_key'])
+                c['inputs']['ssh_key_data'] = ''.join(open(key_file_path, 'r').readlines())
+                del(c['inputs']['private_key'])
+
+            if 'private_key_password' in c['inputs']:
+                if c['inputs']['private_key_password'] == 'prompt':
+                    c['inputs']['ssh_key_unlock'] = getpass('Enter your ssh key password: ')
+                else:
+                    c['inputs']['ssh_key_unlock'] = c['inputs']['private_key_password']
+                    print c
+
+        try:
+            c = cred_res.create(**c)
+        except Exception as ex:
+            raise ex
+
+if tower.projects:
+    # create projects
+    print "\nCreating Projects\n"
+    for p in tower.projects:
+        print p
+        p['organization'] = org_id
+        project_res.create(**p)
 
 if tower.inventories:
     # create inventories
@@ -84,38 +121,78 @@ if tower.inventories:
     for i in tower.inventories:
         print i
         i['organization'] = org_id
+        if 'variables' in i:
+            path = os.path.expanduser(i['variables'])
+            i['variables'] = ''.join(open(path, 'r').readlines())
+        if i.has_key('insights_credential'):
+            res = cred_res.get(organization=org_id, name=i['insights_credential'])
+            i['insights_credential'] = res['id']
+
+        # create inventory
         inv = inv_res.create(**i)
+
         # create dynamic groups, static ones can be imported better with awx-manage
         if i.has_key('groups'):
             for g in i['groups']:
                 print g
                 g['inventory'] = inv['id']
+
+                # XXX supported? https://tower-cli.readthedocs.io/en/latest/api_ref/resources/group.html
                 # set the credential if this group has one
-                if g.has_key('credential'):
-                    cred = cred_res.get(name=g['credential'])
-                    g['credential'] = cred['id']
+                # if g.has_key('credential'):
+                #     cred = cred_res.get(organization=org_id, name=g['credential'])
+                #     g['credential'] = cred['id']
+
                 group = group_res.create(**g)
+
                 # sync the group if it has a credential
-                if group.has_key('group'):
-                    id = group['group']
-                elif group.has_key('id'):
-                    id = group['id']
-                if g.has_key('credential'):
-                    group_res.sync(id)
+                # if group.has_key('group'):
+                #   gid = group['group']
+                # elif group.has_key('id'):
+                #   gid = group['id']
+                # if g.has_key('credential'):
+                #   group_res.sync(gid)
+
                 if g.has_key('hosts'):
                     for h in g['hosts']:
                         h['inventory'] = inv['id']
                         print h
                         host = host_res.create(**h)
-                        host_res.associate(host['id'], group['id'])
+                        host_res.associate(host=host['id'], group=group['id'])
 
-if tower.projects:
-    # create projects 
-    print "\nCreating Projects\n"
-    for p in tower.projects:
-        print p
-        p['organization'] = org_id
-        project_res.create(**p)
+if tower.inventory_script:
+    print "\nCreating Inventory Scripts\n"
+    for i in tower.inventory_script:
+        print i
+        i['organization'] = org_id
+        if 'script' in i:
+            script_path = os.path.expanduser(i['script'])
+            i['script'] = ''.join(open(script_path, 'r').readlines())
+        inv_script_res.create(**i)
+
+if tower.inventory_source:
+    print "\nCreating Inventory Source\n"
+    for i in tower.inventory_source:
+        print i
+        i['organization'] = org_id
+        if i.has_key('credential'):
+            res = cred_res.get(organization=org_id, name=i['credential'])
+            i['credential'] = res['id']
+
+        if i.has_key('source_project'):
+            res = project_res.get(organization=org_id, name=i['source_project'])
+            i['source_project'] = res['id']
+
+        if i.has_key('source_script'):
+            res = inv_script_res.get(organization=org_id, name=i['source_script'])
+            i['source_script'] = res['id']
+
+        if i.has_key('inventory'):
+            res = inv_res.get(organization=org_id, name=i['inventory'])
+            i['inventory'] = res['id']
+
+        inv_source = inv_source_res.create(**i)
+
 
 if tower.job_templates:
     print "Waiting 60 seconds for projects to index."
@@ -126,17 +203,14 @@ if tower.job_templates:
     print "\nCreating Job Templates\n"
     for j in tower.job_templates:
         print j
-        cred = cred_res.get(name=j['machine_credential'])
-        j['credential'] = cred['id']
-        inv = inv_res.get(name=j['inventory'])
-        j['inventory'] = inv['id']
-        project = project_res.get(name=j['project'])
-        j['project'] = project['id']
         j['organization'] = org_id
+        if 'credential' in j:
+            cred = cred_res.get(organization=org_id, name=j['credential'])
+            j['credential'] = cred['id']
+        if 'inventory' in j:
+            inv = inv_res.get(organization=org_id, name=j['inventory'])
+            j['inventory'] = inv['id']
+        if 'project' in j:
+            project = project_res.get(organization=org_id, name=j['project'])
+            j['project'] = project['id']
         job_template_res.create(**j)
-
-
-
-
-
-
